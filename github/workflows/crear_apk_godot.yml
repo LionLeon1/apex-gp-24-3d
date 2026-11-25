@@ -1,0 +1,124 @@
+name: Crear APK APEX GP 24 3D (Godot 4 C#)
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  compilar_godot:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 1. Descargar repositorio
+        uses: actions/checkout@v4
+
+      - name: 2. Configurar Java 17 y .NET 8 SDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: 3. Instalar .NET 8.0 SDK (C# para Godot)
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: 4. Instalar Godot 4.3 (.NET) y Plantillas Android
+        run: |
+          GODOT_VER="4.3-stable"
+          TEMPLATE_DIR="$HOME/.local/share/godot/export_templates/4.3.stable.mono"
+          mkdir -p "$HOME/godot" "$TEMPLATE_DIR" "$HOME/.config/godot" "$HOME/.android"
+
+          curl -fL "https://github.com/godotengine/godot/releases/download/${GODOT_VER}/Godot_v${GODOT_VER}_mono_linux_x86_64.zip" -o /tmp/godot.zip
+          unzip -q /tmp/godot.zip -d "$HOME/godot"
+          chmod +x "$HOME/godot/Godot_v${GODOT_VER}_mono_linux_x86_64/Godot_v${GODOT_VER}_mono_linux.x86_64"
+
+          curl -fL "https://github.com/godotengine/godot/releases/download/${GODOT_VER}/Godot_v${GODOT_VER}_mono_export_templates.tpz" -o /tmp/templates.tpz
+          unzip -q /tmp/templates.tpz -d /tmp/templates_raw
+          mv /tmp/templates_raw/templates/* "$TEMPLATE_DIR/"
+
+      - name: 5. Configurar Android SDK y Keystore de firma
+        run: |
+          SDK_DIR="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          echo "Android SDK: $SDK_DIR"
+          keytool -genkey -v -keystore "$HOME/.android/debug.keystore" \
+            -storepass android -alias androiddebugkey -keypass android \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname "CN=Android Debug,O=Android,C=US"
+
+          cat <<EOF > "$HOME/.config/godot/editor_settings-4.3.tres"
+          [gd_resource type="EditorSettings" format=3]
+
+          [resource]
+          export/android/android_sdk_path = "${SDK_DIR}"
+          export/android/debug_keystore = "${HOME}/.android/debug.keystore"
+          export/android/debug_keystore_user = "androiddebugkey"
+          export/android/debug_keystore_pass = "android"
+          export/android/java_sdk_path = "${JAVA_HOME}"
+          EOF
+
+      - name: 6. Desempaquetar última versión de APEX GP Godot (.json / .zip) + assets propios
+        run: |
+          python3 -c '
+          import glob, json, os, re, shutil, zipfile
+
+          def orden_natural(texto):
+              return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", texto)]
+
+          candidatos = []
+
+          for path in sorted(glob.glob("**/*.json", recursive=True), key=orden_natural):
+              if path.startswith("app_build/"):
+                  continue
+              try:
+                  with open(path, "r", encoding="utf-8") as f:
+                      data = json.load(f)
+                  if isinstance(data, dict) and "project.godot" in data:
+                      candidatos.append((path, data))
+              except Exception:
+                  pass
+
+          for zpath in sorted(glob.glob("**/*.zip", recursive=True), key=orden_natural):
+              if zpath.startswith("app_build/"):
+                  continue
+              try:
+                  with zipfile.ZipFile(zpath, "r") as zf:
+                      for name in sorted(zf.namelist(), key=orden_natural):
+                          if name.endswith(".json"):
+                              data = json.loads(zf.read(name).decode("utf-8"))
+                              if isinstance(data, dict) and "project.godot" in data:
+                                  candidatos.append((f"{zpath}:{name}", data))
+              except Exception:
+                  pass
+
+          if not candidatos:
+              raise FileNotFoundError("No se encontró ningún archivo apex_gp_godot_v*.json en el repositorio.")
+
+          elegido = candidatos[-1]
+          print("Desempaquetando proyecto Godot:", elegido[0])
+          for rel_path, content in elegido[1].items():
+              full_path = os.path.join("app_build", rel_path)
+              os.makedirs(os.path.dirname(full_path), exist_ok=True)
+              with open(full_path, "w", encoding="utf-8") as f:
+                  f.write(content)
+
+          if os.path.isdir("assets"):
+              print("Copiando carpeta assets/ del repositorio...")
+              shutil.copytree("assets", os.path.join("app_build", "assets"), dirs_exist_ok=True)
+          '
+
+      - name: 7. Compilar C# (.NET 8) y exportar APK 3D
+        working-directory: app_build
+        run: |
+          GODOT_BIN="$HOME/godot/Godot_v4.3-stable_mono_linux_x86_64/Godot_v4.3-stable_mono_linux.x86_64"
+          mkdir -p build
+          dotnet build ApexGP24.csproj -c Debug
+          "$GODOT_BIN" --headless --import || true
+          "$GODOT_BIN" --headless --export-debug "Android" "build/apex_gp_24_3d.apk"
+          ls -lh build/apex_gp_24_3d.apk
+
+      - name: 8. Subir APK descargable
+        uses: actions/upload-artifact@v4
+        with:
+          name: apex-gp-24-godot-apk
+          path: app_build/build/apex_gp_24_3d.apk
