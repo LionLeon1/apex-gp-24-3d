@@ -31,7 +31,7 @@ jobs:
 
           curl -fL "https://github.com/godotengine/godot/releases/download/${GODOT_VER}/Godot_v${GODOT_VER}_mono_linux_x86_64.zip" -o /tmp/godot.zip
           unzip -q /tmp/godot.zip -d "$HOME/godot"
-          chmod +x "$HOME/godot/Godot_v${GODOT_VER}_mono_linux_x86_64/Godot_v${GODOT_VER}_mono_linux.x86_64"
+          chmod +x "$HOME/godot/Godot_v${GODOT_VER}_mono_linux_x86_64/Godot_v${GODOT_VER}_mono_linux_x86_64"
 
           curl -fL "https://github.com/godotengine/godot/releases/download/${GODOT_VER}/Godot_v${GODOT_VER}_mono_export_templates.tpz" -o /tmp/templates.tpz
           unzip -q /tmp/templates.tpz -d /tmp/templates_raw
@@ -57,46 +57,52 @@ jobs:
           export/android/java_sdk_path = "${JAVA_HOME}"
           EOF
 
-      - name: 6. Desempaquetar última versión de APEX GP Godot (.json / .zip) + assets propios
+      - name: 6. Desempaquetar última versión real de APEX GP Godot (.json / .zip) + assets propios
         run: |
           python3 -c '
           import glob, json, os, re, shutil, zipfile
 
-          def orden_natural(texto):
-              return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", texto)]
+          def clave_version(etiqueta, nombre_base):
+              nums = [int(n) for n in re.findall(r"v(\d+)", nombre_base.lower())]
+              ver = max(nums) if nums else 0
+              es_json_directo = 1 if ":" not in etiqueta else 0
+              return (ver, es_json_directo, nombre_base.lower())
 
           candidatos = []
 
-          for path in sorted(glob.glob("**/*.json", recursive=True), key=orden_natural):
+          for path in glob.glob("**/*.json", recursive=True):
               if path.startswith("app_build/"):
                   continue
               try:
                   with open(path, "r", encoding="utf-8") as f:
                       data = json.load(f)
                   if isinstance(data, dict) and "project.godot" in data:
-                      candidatos.append((path, data))
+                      candidatos.append((clave_version(path, os.path.basename(path)), path, data))
               except Exception:
                   pass
 
-          for zpath in sorted(glob.glob("**/*.zip", recursive=True), key=orden_natural):
+          for zpath in glob.glob("**/*.zip", recursive=True):
               if zpath.startswith("app_build/"):
                   continue
               try:
                   with zipfile.ZipFile(zpath, "r") as zf:
-                      for name in sorted(zf.namelist(), key=orden_natural):
+                      for name in zf.namelist():
                           if name.endswith(".json"):
                               data = json.loads(zf.read(name).decode("utf-8"))
                               if isinstance(data, dict) and "project.godot" in data:
-                                  candidatos.append((f"{zpath}:{name}", data))
+                                  etiqueta = f"{zpath}:{name}"
+                                  candidatos.append((clave_version(etiqueta, os.path.basename(name)), etiqueta, data))
               except Exception:
                   pass
 
           if not candidatos:
               raise FileNotFoundError("No se encontró ningún archivo apex_gp_godot_v*.json en el repositorio.")
 
+          candidatos.sort(key=lambda x: x[0])
+          print("Candidatos detectados:", [c[1] for c in candidatos])
           elegido = candidatos[-1]
-          print("Desempaquetando proyecto Godot:", elegido[0])
-          for rel_path, content in elegido[1].items():
+          print("Desempaquetando proyecto Godot:", elegido[1])
+          for rel_path, content in elegido[2].items():
               full_path = os.path.join("app_build", rel_path)
               os.makedirs(os.path.dirname(full_path), exist_ok=True)
               with open(full_path, "w", encoding="utf-8") as f:
@@ -110,7 +116,7 @@ jobs:
       - name: 7. Compilar C# (.NET 8) y exportar APK 3D
         working-directory: app_build
         run: |
-          GODOT_BIN="$HOME/godot/Godot_v4.3-stable_mono_linux_x86_64/Godot_v4.3-stable_mono_linux.x86_64"
+          GODOT_BIN="$HOME/godot/Godot_v4.3-stable_mono_linux_x86_64/Godot_v4.3-stable_mono_linux_x86_64"
           mkdir -p build
           dotnet build ApexGP24.csproj -c Debug
           "$GODOT_BIN" --headless --import || true
