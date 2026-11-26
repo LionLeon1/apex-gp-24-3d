@@ -12,7 +12,7 @@ jobs:
       - name: 1. Descargar repositorio
         uses: actions/checkout@v4
 
-      - name: 2. Configurar Java 17 y .NET 8 SDK
+      - name: 2. Configurar Java 17
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
@@ -30,10 +30,20 @@ jobs:
           mkdir -p "$HOME/godot" "$TEMPLATE_DIR" "$HOME/.config/godot" "$HOME/.android"
 
           curl -fL "https://github.com/godotengine/godot/releases/download/${GODOT_VER}/Godot_v${GODOT_VER}_mono_linux_x86_64.zip" -o /tmp/godot.zip
-          unzip -q /tmp/godot.zip -d "$HOME/godot"
-          chmod +x "$HOME/godot/Godot_v${GODOT_VER}_mono_linux_x86_64/Godot_v${GODOT_VER}_mono_linux_x86_64"
+          unzip -q -o /tmp/godot.zip -d "$HOME/godot"
+
+          GODOT_BIN=$(find "$HOME/godot" -maxdepth 2 -type f -name "Godot_v*linux*" ! -name "*.so" | head -n 1)
+          if [ -z "$GODOT_BIN" ]; then
+            echo "No se encontró el binario de Godot en $HOME/godot:"
+            find "$HOME/godot" -maxdepth 3
+            exit 1
+          fi
+          chmod +x "$GODOT_BIN"
+          echo "GODOT_BIN=$GODOT_BIN" >> "$GITHUB_ENV"
+          echo "Binario Godot detectado: $GODOT_BIN"
 
           curl -fL "https://github.com/godotengine/godot/releases/download/${GODOT_VER}/Godot_v${GODOT_VER}_mono_export_templates.tpz" -o /tmp/templates.tpz
+          rm -rf /tmp/templates_raw
           unzip -q /tmp/templates.tpz -d /tmp/templates_raw
           mv /tmp/templates_raw/templates/* "$TEMPLATE_DIR/"
 
@@ -41,6 +51,7 @@ jobs:
         run: |
           SDK_DIR="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
           echo "Android SDK: $SDK_DIR"
+          rm -f "$HOME/.android/debug.keystore"
           keytool -genkey -v -keystore "$HOME/.android/debug.keystore" \
             -storepass android -alias androiddebugkey -keypass android \
             -keyalg RSA -keysize 2048 -validity 10000 \
@@ -59,6 +70,7 @@ jobs:
 
       - name: 6. Desempaquetar última versión real de APEX GP Godot (.json / .zip) + assets propios
         run: |
+          rm -rf app_build
           python3 -c '
           import glob, json, os, re, shutil, zipfile
 
@@ -116,7 +128,6 @@ jobs:
       - name: 7. Compilar C# (.NET 8) y exportar APK 3D
         working-directory: app_build
         run: |
-          GODOT_BIN="$HOME/godot/Godot_v4.3-stable_mono_linux_x86_64/Godot_v4.3-stable_mono_linux_x86_64"
           mkdir -p build
           dotnet build ApexGP24.csproj -c Debug
           "$GODOT_BIN" --headless --import || true
